@@ -15,6 +15,10 @@ from openerp.tools.misc import DEFAULT_SERVER_DATETIME_FORMAT
 
 _logger = logging.getLogger(__name__)
 
+
+import newrelic.agent
+
+
 TIMEOUT = 50
 
 #----------------------------------------------------------
@@ -182,6 +186,7 @@ class Controller(openerp.http.Controller):
 
     @openerp.http.route('/longpolling/poll', type="json", auth="public")
     def poll(self, channels, last, options=None):
+        newrelic.agent.end_of_transaction()
         if options is None:
             options = {}
         if not dispatch:
