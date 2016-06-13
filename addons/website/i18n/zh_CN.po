@@ -7,7 +7,7 @@
 # Jeffery Chenn <jeffery9@gmail.com>, 2015-2016
 # Jeffery Chenn <jeffery9@gmail.com>, 2016
 # liAnGjiA <liangjia@qq.com>, 2015
-# liAnGjiA <liangjia@qq.com>, 2015
+# liAnGjiA <liangjia@qq.com>, 2015-2016
 # Maie <m@maie.name>, 2015
 # Maie <m@maie.name>, 2015
 # Maie <m@maie.name>, 2015
@@ -23,7 +23,7 @@ msgstr ""
 "Project-Id-Version: Odoo 8.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2015-07-22 08:25+0000\n"
-"PO-Revision-Date: 2016-05-13 12:44+0000\n"
+"PO-Revision-Date: 2016-06-07 05:03+0000\n"
 "Last-Translator: Jeffery Chenn <jeffery9@gmail.com>\n"
 "Language-Team: Chinese (China) (http://www.transifex.com/odoo/odoo-8/language/zh_CN/)\n"
 "MIME-Version: 1.0\n"
@@ -547,7 +547,7 @@ msgstr "现在就来检验一下并且今天会发现更多！"
 #. module: website
 #: field:website.menu,child_id:0
 msgid "Child Menus"
-msgstr "子菜单"
+msgstr "下级菜单"
 
 #. module: website
 #: view:website:website.snippets
@@ -1800,7 +1800,7 @@ msgstr "开源客户关系管理软件"
 #. module: website
 #: view:website:website.layout
 msgid "open source website builder"
-msgstr "开源的建站系统"
+msgstr "开源的网站生成器"
 
 #. module: website
 #. openerp-web
@@ -2321,7 +2321,7 @@ msgstr "作为可选继承显示"
 #. module: website
 #: view:website:website.layout
 msgid "Sign in"
-msgstr "登入"
+msgstr "登陆"
 
 #. module: website
 #: view:website:website.themes
