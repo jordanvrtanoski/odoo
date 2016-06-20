@@ -3,15 +3,16 @@
 # * account_asset
 # 
 # Translators:
+# Bole <bole@dajmi5.com>, 2016
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2014
 msgid ""
 msgstr ""
 "Project-Id-Version: Odoo 8.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2015-01-21 14:07+0000\n"
-"PO-Revision-Date: 2015-07-17 06:41+0000\n"
-"Last-Translator: Martin Trigaux\n"
-"Language-Team: Croatian (http://www.transifex.com/p/odoo-8/language/hr/)\n"
+"PO-Revision-Date: 2016-05-16 07:29+0000\n"
+"Last-Translator: Bole <bole@dajmi5.com>\n"
+"Language-Team: Croatian (http://www.transifex.com/odoo/odoo-8/language/hr/)\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: \n"
@@ -21,7 +22,7 @@ msgstr ""
 #. module: account_asset
 #: field:account.asset.asset,entry_count:0
 msgid "# Asset Entries"
-msgstr ""
+msgstr "# Sredstava"
 
 #. module: account_asset
 #: field:asset.asset.report,nbr:0
@@ -123,7 +124,7 @@ msgstr "Povijest imovine"
 #. module: account_asset
 #: field:asset.modify,asset_method_time:0
 msgid "Asset Method Time"
-msgstr ""
+msgstr "Vremenska metoda otpisa"
 
 #. module: account_asset
 #: field:account.asset.asset,name:0
@@ -278,12 +279,12 @@ msgstr "Izračunj imovinu"
 #. module: account_asset
 #: view:account.asset.asset:account_asset.view_account_asset_asset_form
 msgid "Confirm Asset"
-msgstr ""
+msgstr "Potvrdi imovinu"
 
 #. module: account_asset
 #: view:account.asset.asset:account_asset.view_account_asset_asset_form
 msgid "Create Move"
-msgstr ""
+msgstr "Napravi temeljnicu"
 
 #. module: account_asset
 #: code:addons/account_asset/wizard/wizard_asset_compute.py:49
@@ -351,7 +352,7 @@ msgstr "Degresivna"
 #: field:account.asset.asset,method_progress_factor:0
 #: field:account.asset.category,method_progress_factor:0
 msgid "Degressive Factor"
-msgstr ""
+msgstr "Degresivni faktor"
 
 #. module: account_asset
 #: field:account.asset.category,account_expense_depreciation_id:0
@@ -398,7 +399,7 @@ msgstr "Metoda amortizacije"
 #. module: account_asset
 #: view:asset.asset.report:account_asset.view_asset_asset_report_search
 msgid "Depreciation Month"
-msgstr ""
+msgstr "Mjesec amortizacije"
 
 #. module: account_asset
 #: field:account.asset.depreciation.line,name:0
@@ -462,7 +463,7 @@ msgstr "Bruto iznos"
 #. module: account_asset
 #: field:account.asset.asset,purchase_value:0
 msgid "Gross Value"
-msgstr ""
+msgstr "Bruto vrijednost"
 
 #. module: account_asset
 #: view:asset.asset.report:account_asset.view_asset_asset_report_search
@@ -643,14 +644,14 @@ msgstr "Proknjižene stavke amortizacije"
 #. module: account_asset
 #: field:account.asset.asset,prorata:0 field:account.asset.category,prorata:0
 msgid "Prorata Temporis"
-msgstr ""
+msgstr "Prorata Temporis"
 
 #. module: account_asset
 #: constraint:account.asset.asset:0
 msgid ""
 "Prorata temporis can be applied only for time method \"number of "
 "depreciations\"."
-msgstr ""
+msgstr "Prorata temporis metoda može biti primjenjena samo na vremensku metodu \"Broj amortizacija\"."
 
 #. module: account_asset
 #: field:account.asset.asset,purchase_date:0
@@ -661,7 +662,7 @@ msgstr "Datum nabave"
 #. module: account_asset
 #: view:asset.asset.report:account_asset.view_asset_asset_report_search
 msgid "Purchase Month"
-msgstr ""
+msgstr "Mjesec nabavke"
 
 #. module: account_asset
 #: field:asset.modify,name:0
@@ -784,6 +785,14 @@ msgstr ""
 #: field:asset.asset.report,name:0
 msgid "Year"
 msgstr "Godina"
+
+#. module: account_asset
+#: code:addons/account_asset/account_asset_invoice.py:53
+#, python-format
+msgid ""
+"You already have assets with the reference %s.\n"
+"Please delete these assets before creating new ones for this invoice."
+msgstr ""
 
 #. module: account_asset
 #: code:addons/account_asset/account_asset.py:81

@@ -374,7 +374,7 @@ class account_analytic_account(osv.osv):
         inv_ids = []
         for account in self.browse(cr, uid, ids, context=context):
             res[account.id] = 0.0
-            line_ids = lines_obj.search(cr, uid, [('account_id','=', account.id), ('invoice_id','!=',False), ('to_invoice','!=', False), ('journal_id.type', '=', 'general'), ('invoice_id.type', 'in', ['out_invoice', 'out_refund'])], context=context)
+            line_ids = lines_obj.search(cr, uid, [('account_id','=', account.id), ('invoice_id','!=',False), ('invoice_id.state', 'not in', ['draft', 'cancel']), ('to_invoice','!=', False), ('journal_id.type', '=', 'general'), ('invoice_id.type', 'in', ['out_invoice', 'out_refund'])], context=context)
             for line in lines_obj.browse(cr, uid, line_ids, context=context):
                 if line.invoice_id not in inv_ids:
                     inv_ids.append(line.invoice_id)
@@ -677,7 +677,7 @@ class account_analytic_account(osv.osv):
         if not partner:
             raise osv.except_osv(_('No Customer Defined!'),_("You must first select a Customer for Contract %s!") % contract.name )
 
-        fpos_id = fpos_obj.get_fiscal_position(cr, uid, partner.company_id.id, partner.id, context=context)
+        fpos_id = fpos_obj.get_fiscal_position(cr, uid, context.get('force_company') or partner.company_id.id, partner.id, context=context)
         journal_ids = journal_obj.search(cr, uid, [('type', '=','sale'),('company_id', '=', contract.company_id.id or False)], limit=1)
         if not journal_ids:
             raise osv.except_osv(_('Error!'),
@@ -704,6 +704,8 @@ class account_analytic_account(osv.osv):
            'fiscal_position': fpos_id,
            'payment_term': partner_payment_term,
            'company_id': contract.company_id.id or False,
+           'user_id': contract.manager_id.id or uid,
+           'comment': contract.description,
         }
         return invoice
 
@@ -716,7 +718,7 @@ class account_analytic_account(osv.osv):
         account_id = fpos_obj.map_account(cr, uid, fiscal_position, account_id)
 
         taxes = res.taxes_id or False
-        tax_id = fpos_obj.map_tax(cr, uid, fiscal_position, taxes)
+        tax_id = fpos_obj.map_tax(cr, uid, fiscal_position, taxes, context=context)
         values = {
             'name': line.name,
             'account_id': account_id,
@@ -762,9 +764,10 @@ class account_analytic_account(osv.osv):
         if contract_ids:
             cr.execute('SELECT company_id, array_agg(id) as ids FROM account_analytic_account WHERE id IN %s GROUP BY company_id', (tuple(contract_ids),))
             for company_id, ids in cr.fetchall():
-                for contract in self.browse(cr, uid, ids, context=dict(context, company_id=company_id, force_company=company_id)):
+                context_contract = dict(context, company_id=company_id, force_company=company_id)
+                for contract in self.browse(cr, uid, ids, context=context_contract):
                     try:
-                        invoice_values = self._prepare_invoice(cr, uid, contract, context=context)
+                        invoice_values = self._prepare_invoice(cr, uid, contract, context=context_contract)
                         invoice_ids.append(self.pool['account.invoice'].create(cr, uid, invoice_values, context=context))
                         next_date = datetime.datetime.strptime(contract.recurring_next_date or current_date, "%Y-%m-%d")
                         interval = contract.recurring_interval
@@ -840,7 +843,7 @@ class account_analytic_account_summary_user(osv.osv):
              WHERE (j.type = 'general' ) and (j.id=l.journal_id)   
              GROUP BY l.account_id, l.user_id   
             )
-            select (lu.account_id * mu.max_user) + lu.user_id as id,
+            select (lu.account_id::bigint * mu.max_user) + lu.user_id as id,
                     lu.account_id as account_id,
                     lu.user_id as "user",
                     unit_amount

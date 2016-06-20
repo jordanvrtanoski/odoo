@@ -118,6 +118,7 @@ instance.web.FormView = instance.web.View.extend(instance.web.form.FieldManagerM
             "footer_to_buttons": false,
         });
         this.is_initialized = $.Deferred();
+        this.record_loaded = $.Deferred();
         this.mutating_mutex = new $.Mutex();
         this.save_list = [];
         this.render_value_defs = [];
@@ -329,6 +330,7 @@ instance.web.FormView = instance.web.View.extend(instance.web.form.FieldManagerM
         this._actualize_mode();
         this.set({ 'title' : record.id ? record.display_name : _t("New") });
 
+        this.record_loaded = $.Deferred();
         _(this.fields).each(function (field, f) {
             field._dirty_flag = false;
             field._inhibit_on_change_flag = true;
@@ -344,6 +346,7 @@ instance.web.FormView = instance.web.View.extend(instance.web.form.FieldManagerM
             self.on_form_changed();
             self.rendering_engine.init_fields();
             self.is_initialized.resolve();
+            self.record_loaded.resolve();
             self.do_update_pager(record.id === null || record.id === undefined);
             if (self.sidebar) {
                self.sidebar.do_attachement_update(self.dataset, self.datarecord.id);
@@ -368,7 +371,7 @@ instance.web.FormView = instance.web.View.extend(instance.web.form.FieldManagerM
         var keys = _.keys(this.fields_view.fields);
         if (keys.length) {
             return this.dataset.default_get(keys).then(function(r) {
-                self.trigger('load_record', r);
+                self.trigger('load_record', _.clone(r));
             });
         }
         return self.trigger('load_record', {});
@@ -723,14 +726,16 @@ instance.web.FormView = instance.web.View.extend(instance.web.form.FieldManagerM
         $(e.target).attr("disabled", true);
         return this.save().done(function(result) {
             self.trigger("save", result);
-            self.reload().then(function() {
+            self.reload().always(function(){
+                $(e.target).attr("disabled", false);
+            }).then(function() {
                 self.to_view_mode();
                 var menu = instance.webclient.menu;
                 if (menu) {
                     menu.do_reload_needaction();
                 }
             });
-        }).always(function(){
+        }).fail(function(){
             $(e.target).attr("disabled", false);
         });
     },
@@ -2566,6 +2571,15 @@ instance.web.form.FieldCharDomain = instance.web.form.AbstractField.extend(insta
         this.on("change:effective_readonly", this, function () {
             this.display_field();
         });
+        if (this.options.model_field){
+            this.field_manager.fields[this.options.model_field].on("change:value", this, function(){
+                if (self.view && self.view.record_loaded.state == "resolved" && self.view.onchanges_mutex){
+                    self.view.onchanges_mutex.def.then(function(){
+                        self.display_field();
+                    });
+                }
+            });
+        }
         this.display_field();
         return this._super();
     },
@@ -2579,10 +2593,16 @@ instance.web.form.FieldCharDomain = instance.web.form.AbstractField.extend(insta
         this.$el.html(instance.web.qweb.render("FieldCharDomain", {widget: this}));
         if (this.get('value')) {
             var model = this.options.model || this.field_manager.get_field_value(this.options.model_field);
-            var domain = instance.web.pyeval.eval('domain', this.get('value'));
+            try{
+                var domain = instance.web.pyeval.eval('domain', this.get('value'));
+            }
+            catch(e){
+                this.do_warn(_t('Error: Bad domain'), _t('The domain is wrong.'));
+                return;
+            }
             var ds = new instance.web.DataSetStatic(self, model, self.build_context());
             ds.call('search_count', [domain, self.build_context()]).then(function (results) {
-                $('.oe_domain_count', self.$el).text(results + ' records selected');
+                $('.oe_domain_count', self.$el).text(results + _t(' records selected'));
                 if (self.get('effective_readonly')) {
                     $('button span', self.$el).text(' See selection');
                 }
@@ -2964,6 +2984,10 @@ instance.web.form.FieldTextHtml = instance.web.form.AbstractField.extend(instanc
             }
         }
     },
+    focus: function() {
+        var input = !this.get("effective_readonly") && this.$cleditor
+        return input ? input.focus() : false;
+    },
     render_value: function() {
         if (! this.get("effective_readonly")) {
             this.$textarea.val(this.get('value') || '');
@@ -3296,10 +3320,8 @@ instance.web.form.FieldRadio = instance.web.form.AbstractField.extend(instance.w
         var self = this;
         this.$el.toggleClass("oe_readonly", this.get('effective_readonly'));
         this.$("input:checked").prop("checked", false);
-        if (this.get_value()) {
-            this.$("input").filter(function () {return this.value == self.get_value();}).prop("checked", true);
-            this.$(".oe_radio_readonly").text(this.get('value') ? this.get('value')[1] : "");
-        }
+        this.$("input").filter(function () {return this.value == self.get_value();}).prop("checked", true);
+        this.$(".oe_radio_readonly").text(this.get('value') ? this.get('value')[1] : "");
     }
 });
 
@@ -4241,7 +4263,7 @@ instance.web.form.FieldOne2Many = instance.web.form.AbstractField.extend({
                 switch (command[0]) {
                     case commands.CREATE:
                         obj['id'] = _.uniqueId(self.dataset.virtual_id_prefix);
-                        obj.defaults = {};
+                        obj.defaults = self.dataset.last_default_get;
                         self.dataset.to_create.push(obj);
                         self.dataset.cache.push(_.extend(_.clone(obj), {values: _.clone(command[2])}));
                         ids.push(obj.id);
@@ -4348,7 +4370,6 @@ instance.web.form.FieldOne2Many = instance.web.form.AbstractField.extend({
 });
 
 instance.web.form.One2ManyViewManager = instance.web.ViewManager.extend({
-    template: 'One2Many.viewmanager',
     init: function(parent, dataset, views, flags) {
         this._super(parent, dataset, views, _.extend({}, flags, {$sidebar: false}));
         this.registry = this.registry.extend({
@@ -4374,7 +4395,7 @@ instance.web.form.One2ManyViewManager = instance.web.ViewManager.extend({
                 });
             },
             write_function: function(id, data, options) {
-                return self.o2m.dataset.write(id, data, {}).done(function() {
+                return self.o2m.dataset.write(id, data, options).done(function() {
                     self.o2m.reload_current_view();
                 });
             },
@@ -4413,10 +4434,6 @@ instance.web.form.One2ManyListView = instance.web.ListView.extend({
         }));
         this.on('edit:after', this, this.proxy('_after_edit'));
         this.on('save:before cancel:before', this, this.proxy('_before_unedit'));
-
-        this.records
-            .bind('add', this.proxy("changed_records"))
-            .bind('remove', this.proxy("changed_records"));
         this.on('save:after', this, this.proxy("changed_records"));
     },
     start: function () {
@@ -4498,8 +4515,8 @@ instance.web.form.One2ManyListView = instance.web.ListView.extend({
         var pop = new instance.web.form.FormOpenPopup(self);
         pop.show_element(self.o2m.field.relation, id, self.o2m.build_context(), {
             title: _t("Open: ") + self.o2m.string,
-            write_function: function(id, data) {
-                return self.o2m.dataset.write(id, data, {}).done(function() {
+            write_function: function(id, data, options) {
+                return self.o2m.dataset.write(id, data, options).done(function() {
                     self.o2m.reload_current_view();
                 });
             },
@@ -4599,7 +4616,14 @@ instance.web.form.One2ManyListView = instance.web.ListView.extend({
         this.dataset.evict_record(record.get('id'));
 
         return this._super(record);
-    }
+    },
+    reload_content: function () {
+        this.page = Math.max(0, Math.min(
+            this.page,
+            Math.ceil(this.dataset.size() / this.limit()) - 1
+        ));
+        return this._super.apply(this, arguments);
+    },
 });
 instance.web.form.One2ManyGroups = instance.web.ListView.Groups.extend({
     setup_resequence_rows: function () {
@@ -5117,7 +5141,7 @@ instance.web.form.FieldMany2ManyKanban = instance.web.form.AbstractField.extend(
             pop.show_element(self.field.relation, id, self.build_context(), {
                 title: _t("Open: ") + self.string,
                 write_function: function(id, data, options) {
-                    return self.dataset.write(id, data, {}).done(function() {
+                    return self.dataset.write(id, data, options).done(function() {
                         self.render_value();
                     });
                 },
@@ -5543,6 +5567,7 @@ instance.web.form.FieldReference = instance.web.form.AbstractField.extend(instan
         this.m2o = new instance.web.form.FieldMany2One(fm, { attrs: {
             name: 'Referenced Document',
             modifiers: JSON.stringify({readonly: this.get('effective_readonly')}),
+            context: this.build_context().eval(),
         }});
         this.m2o.on("change:value", this, this.data_changed);
         this.m2o.appendTo(this.$(".oe_form_view_reference_m2o"));
@@ -5798,6 +5823,7 @@ instance.web.form.FieldBinaryImage = instance.web.form.FieldBinary.extend({
             $img.css("max-height", "" + self.options.size[1] + "px");
         });
         $img.on('error', function() {
+            self.on_clear();
             $img.attr('src', self.placeholder);
             instance.webclient.notification.warn(_t("Image"), _t("Could not display the selected image."));
         });
@@ -6128,13 +6154,20 @@ instance.web.form.FieldStatus = instance.web.form.AbstractField.extend({
             val = $li.data("id");
         }
         if (val != self.get('value')) {
-            this.view.recursive_save().done(function() {
-                var change = {};
-                change[self.name] = val;
-                self.view.dataset.write(self.view.datarecord.id, change).done(function() {
-                    self.view.reload();
+            if(!this.view.datarecord.id ||
+               this.view.datarecord.id.toString().match(instance.web.BufferedDataSet.virtual_id_regex)) {
+                // don't save, only set value for not-yet-saved many2ones
+                self.set_value(val);
+            }
+            else {
+                this.view.recursive_save().done(function() {
+                    var change = {};
+                    change[self.name] = val;
+                    self.view.dataset.write(self.view.datarecord.id, change).done(function() {
+                        self.view.reload();
+                    });
                 });
-            });
+            }
         }
     },
 });

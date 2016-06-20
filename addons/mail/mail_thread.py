@@ -387,6 +387,13 @@ class mail_thread(osv.AbstractModel):
             name = ir_model_pool.read(cr, uid, ids, ['name'], context=context)[0]['name']
             self.message_post(cr, uid, thread_id, body=_('%s created') % name, context=context)
 
+        # auto_subscribe: take values and defaults into account
+        create_values = dict(values)
+        for key, val in context.iteritems():
+            if key.startswith('default_') and key[8:] not in create_values:
+                create_values[key[8:]] = val
+        self.message_auto_subscribe(cr, uid, [thread_id], create_values.keys(), context=context, values=create_values)
+
         # track values
         track_ctx = dict(context)
         if 'lang' not in track_ctx:
@@ -396,13 +403,6 @@ class mail_thread(osv.AbstractModel):
             if tracked_fields:
                 initial_values = {thread_id: dict.fromkeys(tracked_fields, False)}
                 self.message_track(cr, uid, [thread_id], tracked_fields, initial_values, context=track_ctx)
-
-        # auto_subscribe: take values and defaults into account
-        create_values = dict(values)
-        for key, val in context.iteritems():
-            if key.startswith('default_') and key[8:] not in create_values:
-                create_values[key[8:]] = val
-        self.message_auto_subscribe(cr, uid, [thread_id], create_values.keys(), context=context, values=create_values)
 
         return thread_id
 
@@ -755,6 +755,16 @@ class mail_thread(osv.AbstractModel):
         res = dict()
         return res
 
+    def message_get_recipient_values(self, cr, uid, id, notif_message=None, recipient_ids=None, context=None):
+        """ Get specific notification recipient values to store on the notification
+        mail_mail. Basic method just set the recipient partners as mail_mail
+        recipients. Inherit this method to add custom behavior like using
+        recipient email_to to bypass the recipint_ids heuristics in the
+        mail sending mechanism. """
+        return {
+            'recipient_ids': [(4, pid) for pid in recipient_ids]
+        }
+
     #------------------------------------------------------
     # Mail gateway
     #------------------------------------------------------
@@ -1006,6 +1016,8 @@ class mail_thread(osv.AbstractModel):
                             (model, thread_id, custom_values, uid, None),
                             update_author=True, assert_model=True, create_fallback=True, context=context)
                         if route:
+                            # parent is invalid for a compat-reply
+                            message_dict.pop('parent_id', None)
                             _logger.info(
                                 'Routing mail from %s to %s with Message-Id %s: direct thread reply (compat-mode) to model: %s, thread_id: %s, custom_values: %s, uid: %s',
                                 email_from, email_to, message_id, model, thread_id, custom_values, uid)
@@ -1031,6 +1043,9 @@ class mail_thread(osv.AbstractModel):
                     return [route]
                 elif route is False:
                     return []
+
+        # no route found for a matching reference (or reply), so parent is invalid
+        message_dict.pop('parent_id', None)
 
         # 4. Look for a matching mail.alias entry
         # Delivered-To is a safe bet in most modern MTAs, but we have to fallback on To + Cc values
@@ -1114,6 +1129,8 @@ class mail_thread(osv.AbstractModel):
                 if thread_id and hasattr(model_pool, 'message_update'):
                     model_pool.message_update(cr, user_id, [thread_id], message_dict, context=nosub_ctx)
                 else:
+                    # if a new thread is created, parent is irrelevant
+                    message_dict.pop('parent_id', None)
                     thread_id = model_pool.message_new(cr, user_id, message_dict, custom_values, context=nosub_ctx)
             else:
                 if thread_id:
@@ -1453,6 +1470,7 @@ class mail_thread(osv.AbstractModel):
             :param boolean check_followers: check in document followers
         """
         partner_obj = self.pool['res.partner']
+        users_obj = self.pool['res.users']
         partner_ids = []
         obj = None
         if id and (model or self._name != 'mail.thread') and check_followers:
@@ -1478,16 +1496,15 @@ class mail_thread(osv.AbstractModel):
             email_brackets = "<%s>" % email_address
             if not partner_id:
                 # exact, case-insensitive match
-                ids = partner_obj.search(cr, SUPERUSER_ID,
-                                         [('email', '=ilike', email_address),
-                                          ('user_ids', '!=', False)],
+                user_ids = users_obj.search(cr, SUPERUSER_ID,
+                                         [('email', '=ilike', email_address)],
                                          limit=1, context=context)
+                ids = [users_obj.browse(cr, SUPERUSER_ID, user_ids, context=context).partner_id.id]
                 if not ids:
                     # if no match with addr-spec, attempt substring match within name-addr pair
-                    ids = partner_obj.search(cr, SUPERUSER_ID,
-                                             [('email', 'ilike', email_brackets),
-                                              ('user_ids', '!=', False)],
-                                             limit=1, context=context)
+                    user_ids = users_obj.search(cr, SUPERUSER_ID,
+                                             [('email', 'ilike', email_brackets)], limit=1, context=context)
+                    ids = [users_obj.browse(cr, SUPERUSER_ID, user_ids, context=context).partner_id.id]
                 if ids:
                     partner_id = ids[0]
             # third try: check in partners
@@ -1854,7 +1871,7 @@ class mail_thread(osv.AbstractModel):
                 if msg_ids:
                     notification_obj = self.pool.get('mail.notification')
                     notification_obj._notify(cr, uid, msg_ids[0], partners_to_notify=partner_ids, context=context)
-                    message = message_obj.browse(cr, uid, msg_ids[0], context=context)
+                    message = message_obj.browse(cr, SUPERUSER_ID, msg_ids[0], context=context)
                     if message.parent_id:
                         partner_ids_to_parent_notify = set(partner_ids).difference(partner.id for partner in message.parent_id.notified_partner_ids)
                         for partner_id in partner_ids_to_parent_notify:

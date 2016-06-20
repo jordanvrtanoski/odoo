@@ -30,6 +30,7 @@ import logging
 import pytz
 import xmlrpclib
 
+from openerp.sql_db import LazyCursor
 from openerp.tools import float_round, frozendict, html_sanitize, ustr, OrderedSet
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT as DATE_FORMAT
 from openerp.tools import DEFAULT_SERVER_DATETIME_FORMAT as DATETIME_FORMAT
@@ -57,6 +58,20 @@ class FailedValue(SpecialValue):
 def _check_value(value):
     """ Return ``value``, or call its getter if ``value`` is a :class:`SpecialValue`. """
     return value.get() if isinstance(value, SpecialValue) else value
+
+def copy_cache(records, env):
+    """ Recursively copy the cache of ``records`` to the environment ``env``. """
+    todo, done = set(records), set()
+    while todo:
+        record = todo.pop()
+        if record not in done:
+            done.add(record)
+            target = record.with_env(env)
+            for name, value in record._cache.iteritems():
+                if isinstance(value, BaseModel):
+                    todo.update(value)
+                    value = value.with_env(env)
+                target._cache[name] = value
 
 
 def resolve_all_mro(cls, name, reverse=False):
@@ -538,9 +553,9 @@ class Field(object):
         # when related_sudo, bypass access rights checks when reading values
         others = records.sudo() if self.related_sudo else records
         for record, other in zip(records, others):
-            if not record.id:
-                # draft record, do not switch to another environment
-                other = record
+            if not record.id and record.env != other.env:
+                # draft records: copy record's cache to other's cache first
+                copy_cache(record, other.env)
             # traverse the intermediate fields; follow the first record at each step
             for name in self.related[:-1]:
                 other = other[name][:1]
@@ -548,13 +563,15 @@ class Field(object):
 
     def _inverse_related(self, records):
         """ Inverse the related field ``self`` on ``records``. """
+        # store record values, otherwise they may be lost by cache invalidation!
+        record_value = {record: record[self.name] for record in records}
         for record in records:
             other = record
             # traverse the intermediate fields, and keep at most one record
             for name in self.related[:-1]:
                 other = other[name][:1]
             if other:
-                other[self.related[-1]] = record[self.name]
+                other[self.related[-1]] = record_value[record]
 
     def _search_related(self, records, operator, value):
         """ Determine the domain to search on field ``self``. """
@@ -678,7 +695,8 @@ class Field(object):
 
     def _description_help(self, env):
         if self.help and env.lang:
-            name = "%s,%s" % (self.model_name, self.name)
+            field = self.base_field
+            name = "%s,%s" % (field.model_name, field.name)
             trans = env['ir.translation']._get_source(name, 'help', env.lang)
             return trans or self.help
         return self.help
@@ -781,9 +799,9 @@ class Field(object):
         """ convert ``value`` from the cache to a valid value for export. The
             parameter ``env`` is given for managing translations.
         """
-        if env.context.get('export_raw_data'):
-            return value
-        return bool(value) and ustr(value)
+        if not value:
+            return ''
+        return value if env.context.get('export_raw_data') else ustr(value)
 
     def convert_to_display_name(self, value, record=None):
         """ convert ``value`` from the cache to a suitable display name. """
@@ -954,7 +972,7 @@ class Field(object):
         # invalidate the fields that depend on self, and prepare recomputation
         spec = [(self, records._ids)]
         for field, path in self._triggers:
-            if path and field.store:
+            if path and field.compute and field.store:
                 # don't move this line to function top, see log
                 env = records.env(user=SUPERUSER_ID, context={'active_test': False})
                 target = env[field.model_name].search([(path, 'in', records.ids)])
@@ -1035,6 +1053,11 @@ class Integer(Field):
         # special case, when an integer field is used as inverse for a one2many
         records._cache[self] = value.id or 0
 
+    def convert_to_export(self, value, env):
+        if value or value == 0:
+            return value if env.context.get('export_raw_data') else ustr(value)
+        return ''
+
 
 class Float(Field):
     """ The precision digits are given by the attribute
@@ -1054,7 +1077,7 @@ class Float(Field):
     @property
     def digits(self):
         if callable(self._digits):
-            with fields._get_cursor() as cr:
+            with LazyCursor() as cr:
                 return self._digits(cr)
         else:
             return self._digits
@@ -1079,8 +1102,15 @@ class Float(Field):
     def convert_to_cache(self, value, record, validate=True):
         # apply rounding here, otherwise value in cache may be wrong!
         value = float(value or 0.0)
+        if not validate:
+            return value
         digits = self.digits
         return float_round(value, precision_digits=digits[1]) if digits else value
+
+    def convert_to_export(self, value, env):
+        if value or value == 0.0:
+            return value if env.context.get('export_raw_data') else ustr(value)
+        return ''
 
 
 class _String(Field):
@@ -1093,11 +1123,6 @@ class _String(Field):
     _related_translate = property(attrgetter('translate'))
     _description_translate = property(attrgetter('translate'))
     
-    def convert_to_export(self, value, env):
-        if env.context.get('export_raw_data'):
-            return value if value else None
-        return bool(value) and ustr(value)
-
 
 class Char(_String):
     """ Basic string field, can be length-limited, usually displayed as a
@@ -1197,13 +1222,15 @@ class Date(Field):
     @staticmethod
     def from_string(value):
         """ Convert an ORM ``value`` into a :class:`date` value. """
+        if not value:
+            return None
         value = value[:DATE_LENGTH]
         return datetime.strptime(value, DATE_FORMAT).date()
 
     @staticmethod
     def to_string(value):
         """ Convert a :class:`date` value into the format expected by the ORM. """
-        return value.strftime(DATE_FORMAT)
+        return value.strftime(DATE_FORMAT) if value else False
 
     def convert_to_cache(self, value, record, validate=True):
         if not value:
@@ -1216,9 +1243,9 @@ class Date(Field):
         return self.to_string(value)
 
     def convert_to_export(self, value, env):
-        if value and env.context.get('export_raw_data'):
-            return self.from_string(value) or None
-        return bool(value) and ustr(value)
+        if not value:
+            return ''
+        return self.from_string(value) if env.context.get('export_raw_data') else ustr(value)
 
 
 class Datetime(Field):
@@ -1261,6 +1288,8 @@ class Datetime(Field):
     @staticmethod
     def from_string(value):
         """ Convert an ORM ``value`` into a :class:`datetime` value. """
+        if not value:
+            return None
         value = value[:DATETIME_LENGTH]
         if len(value) == DATE_LENGTH:
             value += " 00:00:00"
@@ -1269,7 +1298,7 @@ class Datetime(Field):
     @staticmethod
     def to_string(value):
         """ Convert a :class:`datetime` value into the format expected by the ORM. """
-        return value.strftime(DATETIME_FORMAT)
+        return value.strftime(DATETIME_FORMAT) if value else False
 
     def convert_to_cache(self, value, record, validate=True):
         if not value:
@@ -1285,9 +1314,9 @@ class Datetime(Field):
         return self.to_string(value)
 
     def convert_to_export(self, value, env):
-        if value and env.context.get('export_raw_data'):
-            return self.from_string(value) or None
-        return bool(value) and ustr(value)
+        if not value:
+            return ''
+        return self.from_string(value) if env.context.get('export_raw_data') else ustr(value)
 
     def convert_to_display_name(self, value, record=None):
         assert record, 'Record expected'
@@ -1395,7 +1424,7 @@ class Selection(Field):
     def convert_to_export(self, value, env):
         if not isinstance(self.selection, list):
             # FIXME: this reproduces an existing buggy behavior!
-            return value or None
+            return value if value else ''
         for item in self._description_selection(env):
             if item[0] == value:
                 return item[1]
@@ -1432,7 +1461,7 @@ class Reference(Selection):
         return "%s,%s" % (value._name, value.id) if value else False
 
     def convert_to_export(self, value, env):
-        return value.name_get()[0][1] if value else None
+        return value.name_get()[0][1] if value else ''
 
     def convert_to_display_name(self, value, record=None):
         return ustr(value and value.display_name)
@@ -1572,7 +1601,7 @@ class Many2one(_Relational):
         return value.id
 
     def convert_to_export(self, value, env):
-        return value.name_get()[0][1] if value else None
+        return value.name_get()[0][1] if value else ''
 
     def convert_to_display_name(self, value, record=None):
         return ustr(value.display_name)
@@ -1678,19 +1707,31 @@ class _RelationalMulti(_Relational):
         return result
 
     def convert_to_export(self, value, env):
-        return ','.join(name for id, name in value.name_get()) if value else None
+        return ','.join(name for id, name in value.name_get()) if value else ''
 
     def convert_to_display_name(self, value, record=None):
         raise NotImplementedError()
 
     def _compute_related(self, records):
         """ Compute the related field ``self`` on ``records``. """
-        for record in records:
-            value = record
-            # traverse the intermediate fields, and keep at most one record
-            for name in self.related[:-1]:
-                value = value[name][:1]
-            record[self.name] = value[self.related[-1]]
+        super(_RelationalMulti, self)._compute_related(records)
+        if self.related_sudo:
+            # determine which records in the relation are actually accessible
+            target = records.mapped(self.name)
+            target_ids = set(target.search([('id', 'in', target.ids)]).ids)
+            accessible = lambda target: target.id in target_ids
+            # filter values to keep the accessible records only
+            for record in records:
+                record[self.name] = record[self.name].filtered(accessible)
+
+    def setup_triggers(self, env):
+        super(_RelationalMulti, self).setup_triggers(env)
+        # also invalidate self when fields appearing in the domain are modified
+        if isinstance(self.domain, list):
+            comodel = env[self.comodel_name]
+            for arg in self.domain:
+                if isinstance(arg, (tuple, list)) and isinstance(arg[0], basestring):
+                    self._setup_dependency([self.name], comodel, arg[0].split('.'))
 
 
 class One2many(_RelationalMulti):
@@ -1862,7 +1903,7 @@ class Id(Field):
         raise TypeError("field 'id' cannot be assigned")
 
 # imported here to avoid dependency cycle issues
-from openerp import SUPERUSER_ID, registry
+from openerp import SUPERUSER_ID
 from .exceptions import Warning, AccessError, MissingError
 from .models import BaseModel, MAGIC_COLUMNS
 from .osv import fields

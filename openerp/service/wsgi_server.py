@@ -45,6 +45,10 @@ import openerp
 import openerp.tools.config as config
 import websrv_lib
 
+import newrelic
+import newrelic.agent
+newrelic.agent.initialize('/opt/odoo/newrelic.ini')
+
 _logger = logging.getLogger(__name__)
 
 # XML-RPC fault codes. Some care must be taken when changing these: the
@@ -209,6 +213,7 @@ def application_unproxied(environ, start_response):
     start_response('404 Not Found', [('Content-Type', 'text/plain'), ('Content-Length', str(len(response)))])
     return [response]
 
+@newrelic.agent.wsgi_application()
 def application(environ, start_response):
     if config['proxy_mode'] and 'HTTP_X_FORWARDED_HOST' in environ:
         return werkzeug.contrib.fixers.ProxyFix(application_unproxied)(environ, start_response)

@@ -3,14 +3,15 @@
 # * l10n_fr
 # 
 # Translators:
+# jonas jensen <j.jensen@tcomp.dk>, 2015
 msgid ""
 msgstr ""
 "Project-Id-Version: Odoo 8.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2012-11-24 02:53+0000\n"
-"PO-Revision-Date: 2015-05-29 13:12+0000\n"
-"Last-Translator: Martin Trigaux\n"
-"Language-Team: Danish (http://www.transifex.com/projects/p/odoo-8/language/da/)\n"
+"PO-Revision-Date: 2016-04-11 13:24+0000\n"
+"Last-Translator: jonas jensen <j.jensen@tcomp.dk>\n"
+"Language-Team: Danish (http://www.transifex.com/odoo/odoo-8/language/da/)\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: \n"
@@ -35,7 +36,7 @@ msgstr "Linier"
 #. module: l10n_fr
 #: model:ir.model,name:l10n_fr.model_account_bilan_report
 msgid "Account Bilan Report"
-msgstr ""
+msgstr "Konto Bilan Rapport"
 
 #. module: l10n_fr
 #: model:ir.model,name:l10n_fr.model_account_cdr_report
@@ -80,7 +81,7 @@ msgstr "Navn"
 #. module: l10n_fr
 #: model:ir.actions.act_window,name:l10n_fr.action_account_cdr_report
 msgid "Compte de resultat Report"
-msgstr ""
+msgstr "Compte de resultat Report"
 
 #. module: l10n_fr
 #: model:account.fiscal.position.template,note:l10n_fr.fiscal_position_template_intraeub2b

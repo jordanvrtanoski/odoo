@@ -20,6 +20,7 @@
 ##############################################################################
 
 import logging
+import psycopg2
 import time
 from datetime import datetime
 
@@ -425,7 +426,7 @@ class pos_session(osv.osv):
             bank_statement_ids.append(statement_id)
 
         values.update({
-            'name': self.pool['ir.sequence'].get(cr, uid, 'pos.session'),
+            'name': self.pool['ir.sequence'].get(cr, uid, 'pos.session', context=context),
             'statement_ids' : [(6, 0, bank_statement_ids)],
             'config_id': config_id
         })
@@ -586,20 +587,51 @@ class pos_order(osv.osv):
             'journal':      ui_paymentline['journal_id'],
         }
 
+    # This deals with orders that belong to a closed session. In order
+    # to recover from this we:
+    # - assign the order to another compatible open session
+    # - if that doesn't exist, create a new one
+    def _get_valid_session(self, cr, uid, order, context=None):
+        session = self.pool.get('pos.session')
+        closed_session = session.browse(cr, uid, order['pos_session_id'], context=context)
+        open_sessions = session.search(cr, uid, [('state', '=', 'opened'),
+                                                 ('config_id', '=', closed_session.config_id.id),
+                                                 ('user_id', '=', closed_session.user_id.id)],
+                                       limit=1, order="start_at DESC", context=context)
+
+        if open_sessions:
+            return open_sessions[0]
+        else:
+            new_session_id = session.create(cr, uid, {
+                'config_id': closed_session.config_id.id,
+            }, context=context)
+            new_session = session.browse(cr, uid, new_session_id, context=context)
+
+            # bypass opening_control (necessary when using cash control)
+            new_session.signal_workflow('open')
+
+            return new_session_id
+
     def _process_order(self, cr, uid, order, context=None):
+        session = self.pool.get('pos.session').browse(cr, uid, order['pos_session_id'], context=context)
+
+        if session.state == 'closing_control' or session.state == 'closed':
+            session_id = self._get_valid_session(cr, uid, order, context=context)
+            session = self.pool.get('pos.session').browse(cr, uid, session_id, context=context)
+            order['pos_session_id'] = session_id
+
         order_id = self.create(cr, uid, self._order_fields(cr, uid, order, context=context),context)
         journal_ids = set()
         for payments in order['statement_ids']:
             self.add_payment(cr, uid, order_id, self._payment_fields(cr, uid, payments[2], context=context), context=context)
             journal_ids.add(payments[2]['journal_id'])
 
-        session = self.pool.get('pos.session').browse(cr, uid, order['pos_session_id'], context=context)
         if session.sequence_number <= order['sequence_number']:
             session.write({'sequence_number': order['sequence_number'] + 1})
             session.refresh()
 
         if not float_is_zero(order['amount_return'], self.pool.get('decimal.precision').precision_get(cr, uid, 'Account')):
-            cash_journal = session.cash_journal_id
+            cash_journal = session.cash_journal_id.id
             if not cash_journal:
                 # Select for change one of the cash journals used in this payment
                 cash_journal_ids = self.pool['account.journal'].search(cr, uid, [
@@ -642,6 +674,9 @@ class pos_order(osv.osv):
 
             try:
                 self.signal_workflow(cr, uid, [order_id], 'paid')
+            except psycopg2.OperationalError:
+                # do not hide transactional errors, the order(s) won't be saved!
+                raise
             except Exception as e:
                 _logger.error('Could not fully process the POS Order: %s', tools.ustr(e))
 
@@ -998,6 +1033,8 @@ class pos_order(osv.osv):
                 'currency_id': order.pricelist_id.currency_id.id, # considering partner's sale pricelist's currency
             }
             inv.update(inv_ref.onchange_partner_id(cr, uid, [], 'out_invoice', order.partner_id.id)['value'])
+            # FORWARDPORT TO SAAS-6 ONLY!
+            inv.update({'fiscal_position': False})
             if not inv.get('account_id', None):
                 inv['account_id'] = acc
             inv_id = inv_ref.create(cr, uid, inv, context=context)
@@ -1014,8 +1051,7 @@ class pos_order(osv.osv):
                 inv_line.update(inv_line_ref.product_id_change(cr, uid, [],
                                                                line.product_id.id,
                                                                line.product_id.uom_id.id,
-                                                               line.qty, partner_id = order.partner_id.id,
-                                                               fposition_id=order.partner_id.property_account_position.id)['value'])
+                                                               line.qty, partner_id = order.partner_id.id)['value'])
                 if not inv_line.get('account_analytic_id', False):
                     inv_line['account_analytic_id'] = \
                         self._prepare_analytic_account(cr, uid, line,
@@ -1085,7 +1121,7 @@ class pos_order(osv.osv):
                 tax_amount = line.price_subtotal * tax['base_sign']
             else:
                 tax_code_id = tax['ref_base_code_id']
-                tax_amount = -line.price_subtotal * tax['ref_base_sign']
+                tax_amount = abs(line.price_subtotal) * tax['ref_base_sign']
 
             return (tax_code_id, tax_amount,)
 
@@ -1169,6 +1205,9 @@ class pos_order(osv.osv):
             # Create an move for each order line
 
             cur = order.pricelist_id.currency_id
+            round_per_line = True
+            if order.company_id.tax_calculation_rounding_method == 'round_globally':
+                round_per_line = False
             for line in order.lines:
                 tax_amount = 0
                 taxes = []
@@ -1178,14 +1217,14 @@ class pos_order(osv.osv):
                 computed_taxes = account_tax_obj.compute_all(cr, uid, taxes, line.price_unit * (100.0-line.discount) / 100.0, line.qty)['taxes']
 
                 for tax in computed_taxes:
-                    tax_amount += cur_obj.round(cr, uid, cur, tax['amount'])
+                    tax_amount += cur_obj.round(cr, uid, cur, tax['amount']) if round_per_line else tax['amount']
                     if tax_amount < 0:
                         group_key = (tax['ref_tax_code_id'], tax['base_code_id'], tax['account_collected_id'], tax['id'])
                     else:
                         group_key = (tax['tax_code_id'], tax['base_code_id'], tax['account_collected_id'], tax['id'])
 
                     group_tax.setdefault(group_key, 0)
-                    group_tax[group_key] += cur_obj.round(cr, uid, cur, tax['amount'])
+                    group_tax[group_key] += cur_obj.round(cr, uid, cur, tax['amount']) if round_per_line else tax['amount']
 
                 amount = line.price_subtotal
 
@@ -1255,7 +1294,7 @@ class pos_order(osv.osv):
                     'credit': ((tax_amount>0) and tax_amount) or 0.0,
                     'debit': ((tax_amount<0) and -tax_amount) or 0.0,
                     'tax_code_id': key[tax_code_pos],
-                    'tax_amount': abs(tax_amount),
+                    'tax_amount': abs(tax_amount) * tax.tax_sign if tax_amount>=0 else abs(tax_amount) * tax.ref_tax_sign,
                     'partner_id': order.partner_id and self.pool.get("res.partner")._find_accounting_partner(order.partner_id).id or False
                 })
 
@@ -1377,7 +1416,7 @@ class pos_order_line(osv.osv):
     }
 
     _defaults = {
-        'name': lambda obj, cr, uid, context: obj.pool.get('ir.sequence').get(cr, uid, 'pos.order.line'),
+        'name': lambda obj, cr, uid, context: obj.pool.get('ir.sequence').get(cr, uid, 'pos.order.line', context=context),
         'qty': lambda *a: 1,
         'discount': lambda *a: 0.0,
         'company_id': lambda self,cr,uid,c: self.pool.get('res.users').browse(cr, uid, uid, c).company_id.id,

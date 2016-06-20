@@ -44,7 +44,6 @@ import functools
 import itertools
 import logging
 import operator
-import pickle
 import pytz
 import re
 import time
@@ -68,14 +67,14 @@ from .osv.query import Query
 from .tools import frozendict, lazy_property, ormcache
 from .tools.config import config
 from .tools.func import frame_codeinfo
-from .tools.misc import CountingStream, DEFAULT_SERVER_DATETIME_FORMAT, DEFAULT_SERVER_DATE_FORMAT
+from .tools.misc import CountingStream, DEFAULT_SERVER_DATETIME_FORMAT, DEFAULT_SERVER_DATE_FORMAT, pickle
 from .tools.safe_eval import safe_eval as eval
 from .tools.translate import _
 
 _logger = logging.getLogger(__name__)
 _schema = logging.getLogger(__name__ + '.schema')
 
-regex_order = re.compile('^( *([a-z0-9:_]+|"[a-z0-9:_]+")( *desc| *asc)?( *, *|))+$', re.I)
+regex_order = re.compile('^(\s*([a-z0-9:_]+|"[a-z0-9:_]+")(\s+(desc|asc))?\s*(,|$))+(?<!,)$', re.I)
 regex_object_name = re.compile(r'^[a-z0-9_.]+$')
 onchange_v7 = re.compile(r"^(\w+)\((.*)\)$")
 
@@ -908,10 +907,10 @@ class BaseModel(object):
                         if lines2:
                             # merge first line with record's main line
                             for j, val in enumerate(lines2[0]):
-                                if val:
+                                if val or isinstance(val, bool):
                                     current[j] = val
                             # check value of current field
-                            if not current[i]:
+                            if not current[i] and not isinstance(current[i], bool):
                                 # assign xml_ids, and forget about remaining lines
                                 xml_ids = [item[1] for item in value.name_get()]
                                 current[i] = ','.join(xml_ids)
@@ -1247,7 +1246,8 @@ class BaseModel(object):
         for fun, msg, names in self._constraints:
             try:
                 # validation must be context-independent; call ``fun`` without context
-                valid = not (set(names) & field_names) or fun(self._model, cr, uid, ids)
+                valid = names and not (set(names) & field_names)
+                valid = valid or fun(self._model, cr, uid, ids)
                 extra_error = None
             except Exception, e:
                 _logger.debug('Exception while validating constraint', exc_info=True)
@@ -1371,7 +1371,7 @@ class BaseModel(object):
            :return: True if the current user is a member of one of the
                     given groups
         """
-        return any(self.pool['res.users'].has_group(cr, uid, group_ext_id)
+        return any(self.pool['res.users'].has_group(cr, uid, group_ext_id.strip())
                    for group_ext_id in groups.split(','))
 
     def _get_default_form_view(self, cr, user, context=None):
@@ -1624,7 +1624,9 @@ class BaseModel(object):
             return len(res)
         return res
 
-    @api.returns('self')
+    @api.returns('self',
+        upgrade=lambda self, value, args, offset=0, limit=None, order=None, count=False: value if count else self.browse(value),
+        downgrade=lambda self, value, args, offset=0, limit=None, order=None, count=False: value if count else value.ids)
     def search(self, cr, user, args, offset=0, limit=None, order=None, context=None, count=False):
         """ search(args[, offset=0][, limit=None][, order=None][, count=False])
 
@@ -1946,7 +1948,7 @@ class BaseModel(object):
         gb_function = split[1] if len(split) == 2 else None
         temporal = field_type in ('date', 'datetime')
         tz_convert = field_type == 'datetime' and context.get('tz') in pytz.all_timezones
-        qualified_field = self._inherits_join_calc(split[0], query)
+        qualified_field = self._inherits_join_calc(self._table, split[0], query)
         if temporal:
             display_formats = {
                 # Careful with week/year formats:
@@ -2103,7 +2105,7 @@ class BaseModel(object):
             if getattr(self._fields[f].base_field.column, '_classic_write', False)
         ]
 
-        field_formatter = lambda f: (self._fields[f].group_operator or 'sum', self._inherits_join_calc(f, query), f)
+        field_formatter = lambda f: (self._fields[f].group_operator or 'sum', self._inherits_join_calc(self._table, f, query), f)
         select_terms = ["%s(%s) AS %s" % field_formatter(f) for f in aggregated_fields]
 
         for gb in annotated_groupbys:
@@ -2177,17 +2179,18 @@ class BaseModel(object):
         parent_alias, parent_alias_statement = query.add_join((current_model._table, parent_model._table, inherits_field, 'id', inherits_field), implicit=True)
         return parent_alias
 
-    def _inherits_join_calc(self, field, query):
+    def _inherits_join_calc(self, alias, field, query, implicit=True, outer=False):
         """
         Adds missing table select and join clause(s) to ``query`` for reaching
         the field coming from an '_inherits' parent table (no duplicates).
 
+        :param alias: name of the initial SQL alias
         :param field: name of inherited field to reach
         :param query: query object on which the JOIN should be added
         :return: qualified name of field, to be used in SELECT clause
         """
         # INVARIANT: alias is the SQL alias of model._table in query
-        model, alias = self, self._table
+        model = self
         while field in model._inherit_fields and field not in model._columns:
             # retrieve the parent model where field is inherited from
             parent_model_name = model._inherit_fields[field][0]
@@ -2196,7 +2199,7 @@ class BaseModel(object):
             # JOIN parent_model._table AS parent_alias ON alias.parent_field = parent_alias.id
             parent_alias, _ = query.add_join(
                 (alias, parent_model._table, parent_field, 'id', parent_field),
-                implicit=True,
+                implicit=implicit, outer=outer,
             )
             model, alias = parent_model, parent_alias
         return '"%s"."%s"' % (alias, field)
@@ -2244,7 +2247,7 @@ class BaseModel(object):
                 # if val is a many2one, just write the ID
                 if type(val) == tuple:
                     val = val[0]
-                if val is not False:
+                if f._type == 'boolean' or val is not False:
                     cr.execute(update_query, (ss[1](val), key))
 
     @api.model
@@ -3212,6 +3215,14 @@ class BaseModel(object):
                 if fcolumn._prefetch
                 if not fcolumn.groups or self.user_has_groups(fcolumn.groups)
             }
+        elif self._columns[field.name]._multi:
+            # prefetch all function fields with the same value for 'multi'
+            multi = self._columns[field.name]._multi
+            fnames = {fname
+                for fname, fcolumn in self._columns.iteritems()
+                if fcolumn._multi == multi
+                if not fcolumn.groups or self.user_has_groups(fcolumn.groups)
+            }
         else:
             fnames = {field.name}
 
@@ -3230,10 +3241,11 @@ class BaseModel(object):
         try:
             result = records.read(list(fnames), load='_classic_write')
         except AccessError:
-            pass
+            # not all records may be accessible, try with only current record
+            result = self.read(list(fnames), load='_classic_write')
 
         # check the cache, and update it if necessary
-        if not self._cache.contains(field):
+        if field not in self._cache:
             for values in result:
                 record = self.browse(values.pop('id'))
                 record._cache.update(record._convert_to_cache(values, validate=False))
@@ -3273,7 +3285,7 @@ class BaseModel(object):
         def qualify(field):
             col = field.name
             if field.inherited:
-                res = self._inherits_join_calc(field.name, query)
+                res = self._inherits_join_calc(self._table, field.name, query)
             else:
                 res = '"%s"."%s"' % (self._table, col)
             if field.type == 'binary' and (context.get('bin_size') or context.get('bin_size_' + col)):
@@ -3864,7 +3876,7 @@ class BaseModel(object):
                     self._check_selection_field_value(cr, user, field, vals[field], context=context)
                 if column._classic_write and not hasattr(column, '_fnct_inv'):
                     if (not totranslate) or not column.translate:
-                        updates.append((field, '%s', column._symbol_set[1](vals[field])))
+                        updates.append((field, column._symbol_set[0], column._symbol_set[1](vals[field])))
                     direct.append(field)
                 else:
                     upd_todo.append(field)
@@ -3883,7 +3895,7 @@ class BaseModel(object):
                 self._table, ','.join('"%s"=%s' % u[:2] for u in updates),
             )
             params = tuple(u[2] for u in updates if len(u) > 2)
-            for sub_ids in cr.split_for_in_conditions(ids):
+            for sub_ids in cr.split_for_in_conditions(set(ids)):
                 cr.execute(query, params + (sub_ids,))
                 if cr.rowcount != len(sub_ids):
                     raise MissingError(_('One of the records you are trying to modify has already been deleted (Document type: %s).') % self._description)
@@ -3898,7 +3910,8 @@ class BaseModel(object):
                             # Inserting value to DB
                             context_wo_lang = dict(context, lang=None)
                             self.write(cr, user, ids, {f: vals[f]}, context=context_wo_lang)
-                        self.pool.get('ir.translation')._set_ids(cr, user, self._name+','+f, 'model', context['lang'], ids, vals[f], src_trans)
+                        translation_value = self._columns[f]._symbol_set[1](vals[f])
+                        self.pool['ir.translation']._set_ids(cr, user, self._name+','+f, 'model', context['lang'], ids, translation_value, src_trans)
 
         # invalidate and mark new-style fields to recompute; do this before
         # setting other fields, because it can require the value of computed
@@ -3921,8 +3934,8 @@ class BaseModel(object):
         # for recomputing new-style fields
         recs.modified(upd_todo)
 
-        unknown_fields = updend[:]
-        for table in self._inherits:
+        unknown_fields = set(updend)
+        for table, inherit_field in self._inherits.iteritems():
             col = self._inherits[table]
             nids = []
             for sub_ids in cr.split_for_in_conditions(ids):
@@ -3931,10 +3944,11 @@ class BaseModel(object):
                 nids.extend([x[0] for x in cr.fetchall()])
 
             v = {}
-            for val in updend:
-                if self._inherit_fields[val][0] == table:
-                    v[val] = vals[val]
-                    unknown_fields.remove(val)
+            for fname in updend:
+                field = self._fields[fname]
+                if field.inherited and field.related[0] == inherit_field:
+                    v[fname] = vals[fname]
+                    unknown_fields.discard(fname)
             if v:
                 self.pool[table].write(cr, user, nids, v, context)
 
@@ -4005,18 +4019,22 @@ class BaseModel(object):
 
         done = {}
         recs.env.recompute_old.extend(result)
-        for order, model_name, ids_to_update, fields_to_recompute in sorted(recs.env.recompute_old):
-            key = (model_name, tuple(fields_to_recompute))
-            done.setdefault(key, {})
-            # avoid to do several times the same computation
-            todo = []
-            for id in ids_to_update:
-                if id not in done[key]:
-                    done[key][id] = True
-                    if id not in deleted_related[model_name]:
-                        todo.append(id)
-            self.pool[model_name]._store_set_values(cr, user, todo, fields_to_recompute, context)
-        recs.env.clear_recompute_old()
+        while recs.env.recompute_old:
+            sorted_recompute_old = sorted(recs.env.recompute_old)
+            recs.env.clear_recompute_old()
+            for __, model_name, ids_to_update, fields_to_recompute in \
+                    sorted_recompute_old:
+                key = (model_name, tuple(fields_to_recompute))
+                done.setdefault(key, {})
+                # avoid to do several times the same computation
+                todo = []
+                for id in ids_to_update:
+                    if id not in done[key]:
+                        done[key][id] = True
+                        if id not in deleted_related[model_name]:
+                            todo.append(id)
+                self.pool[model_name]._store_set_values(
+                    cr, user, todo, fields_to_recompute, context)
 
         # recompute new-style fields
         if recs.env.recompute and context.get('recompute', True):
@@ -4172,7 +4190,7 @@ class BaseModel(object):
         for field in vals:
             current_field = self._columns[field]
             if current_field._classic_write:
-                updates.append((field, '%s', current_field._symbol_set[1](vals[field])))
+                updates.append((field, current_field._symbol_set[0], current_field._symbol_set[1](vals[field])))
 
                 #for the function fields that receive a value, we set them directly in the database
                 #(they may be required), but we also need to trigger the _fct_inv()
@@ -4273,11 +4291,15 @@ class BaseModel(object):
 
         if recs.env.recompute and context.get('recompute', True):
             done = []
-            for order, model_name, ids, fields2 in sorted(recs.env.recompute_old):
-                if not (model_name, ids, fields2) in done:
-                    self.pool[model_name]._store_set_values(cr, user, ids, fields2, context)
-                    done.append((model_name, ids, fields2))
-            recs.env.clear_recompute_old()
+            while recs.env.recompute_old:
+                sorted_recompute_old = sorted(recs.env.recompute_old)
+                recs.env.clear_recompute_old()
+                for __, model_name, ids, fields2 in sorted_recompute_old:
+                    if not (model_name, ids, fields2) in done:
+                        self.pool[model_name]._store_set_values(
+                            cr, user, ids, fields2, context)
+                        done.append((model_name, ids, fields2))
+
             # recompute new-style fields
             recs.recompute()
 
@@ -4401,7 +4423,7 @@ class BaseModel(object):
                                 value[v] = value[v][0]
                             except:
                                 pass
-                        updates.append((v, '%s', column._symbol_set[1](value[v])))
+                        updates.append((v, column._symbol_set[0], column._symbol_set[1](value[v])))
                     if updates:
                         query = 'UPDATE "%s" SET %s WHERE id = %%s' % (
                             self._table, ','.join('"%s"=%s' % u[:2] for u in updates),
@@ -4425,8 +4447,8 @@ class BaseModel(object):
                                 value = value[0]
                             except:
                                 pass
-                        query = 'UPDATE "%s" SET "%s"=%%s WHERE id = %%s' % (
-                            self._table, f,
+                        query = 'UPDATE "%s" SET "%s"=%s WHERE id = %%s' % (
+                            self._table, f, column._symbol_set[0],
                         )
                         cr.execute(query, (column._symbol_set[1](value), id))
 
@@ -4522,9 +4544,9 @@ class BaseModel(object):
         for inherited_model in self._inherits:
             rule_where_clause, rule_where_clause_params, rule_tables = rule_obj.domain_get(cr, uid, inherited_model, mode, context=context)
             apply_rule(rule_where_clause, rule_where_clause_params, rule_tables,
-                        parent_model=inherited_model)
+                       parent_model=inherited_model)
 
-    def _generate_m2o_order_by(self, order_field, query):
+    def _generate_m2o_order_by(self, alias, order_field, query, reverse_direction, seen):
         """
         Add possibly missing JOIN to ``query`` and generate the ORDER BY clause for m2o fields,
         either native m2o fields or function/related fields that are stored, including
@@ -4534,18 +4556,18 @@ class BaseModel(object):
         """
         if order_field not in self._columns and order_field in self._inherit_fields:
             # also add missing joins for reaching the table containing the m2o field
-            qualified_field = self._inherits_join_calc(order_field, query)
             order_field_column = self._inherit_fields[order_field][2]
+            qualified_field = self._inherits_join_calc(alias, order_field, query)
+            alias, order_field = qualified_field.replace('"', '').split('.', 1)
         else:
-            qualified_field = '"%s"."%s"' % (self._table, order_field)
             order_field_column = self._columns[order_field]
 
         assert order_field_column._type == 'many2one', 'Invalid field passed to _generate_m2o_order_by()'
         if not order_field_column._classic_write and not getattr(order_field_column, 'store', False):
-            _logger.debug("Many2one function/related fields must be stored " \
-                "to be used as ordering fields! Ignoring sorting for %s.%s",
-                self._name, order_field)
-            return
+            _logger.debug("Many2one function/related fields must be stored "
+                          "to be used as ordering fields! Ignoring sorting for %s.%s",
+                          self._name, order_field)
+            return []
 
         # figure out the applicable order_by for the m2o
         dest_model = self.pool[order_field_column._obj]
@@ -4553,19 +4575,67 @@ class BaseModel(object):
         if not regex_order.match(m2o_order):
             # _order is complex, can't use it here, so we default to _rec_name
             m2o_order = dest_model._rec_name
-        else:
-            # extract the field names, to be able to qualify them and add desc/asc
-            m2o_order_list = []
-            for order_part in m2o_order.split(","):
-                m2o_order_list.append(order_part.strip().split(" ", 1)[0].strip())
-            m2o_order = m2o_order_list
 
         # Join the dest m2o table if it's not joined yet. We use [LEFT] OUTER join here
         # as we don't want to exclude results that have NULL values for the m2o
-        src_table, src_field = qualified_field.replace('"', '').split('.', 1)
-        dst_alias, dst_alias_statement = query.add_join((src_table, dest_model._table, src_field, 'id', src_field), implicit=False, outer=True)
-        qualify = lambda field: '"%s"."%s"' % (dst_alias, field)
-        return map(qualify, m2o_order) if isinstance(m2o_order, list) else qualify(m2o_order)
+        join = (alias, dest_model._table, order_field, 'id', order_field)
+        dst_alias, dst_alias_statement = query.add_join(join, implicit=False, outer=True)
+        return dest_model._generate_order_by_inner(dst_alias, m2o_order, query,
+                                                   reverse_direction=reverse_direction, seen=seen)
+
+    def _generate_order_by_inner(self, alias, order_spec, query, reverse_direction=False, seen=None):
+        if seen is None:
+            seen = set()
+        order_by_elements = []
+        self._check_qorder(order_spec)
+        for order_part in order_spec.split(','):
+            order_split = order_part.strip().split(' ')
+            order_field = order_split[0].strip()
+            order_direction = order_split[1].strip().upper() if len(order_split) == 2 else ''
+            if reverse_direction:
+                order_direction = 'ASC' if order_direction == 'DESC' else 'DESC'
+            do_reverse = order_direction == 'DESC'
+            order_column = None
+            inner_clauses = []
+            add_dir = False
+            if order_field == 'id':
+                order_by_elements.append('"%s"."%s" %s' % (alias, order_field, order_direction))
+            elif order_field in self._columns:
+                order_column = self._columns[order_field]
+                if order_column._classic_read:
+                    inner_clauses = ['"%s"."%s"' % (alias, order_field)]
+                    add_dir = True
+                elif order_column._type == 'many2one':
+                    key = (self._name, order_column._obj, order_field)
+                    if key not in seen:
+                        seen.add(key)
+                        inner_clauses = self._generate_m2o_order_by(alias, order_field, query, do_reverse, seen)
+                else:
+                    continue  # ignore non-readable or "non-joinable" fields
+            elif order_field in self._inherit_fields:
+                parent_obj = self.pool[self._inherit_fields[order_field][3]]
+                order_column = parent_obj._columns[order_field]
+                if order_column._classic_read:
+                    inner_clauses = [self._inherits_join_calc(alias, order_field, query, implicit=False, outer=True)]
+                    add_dir = True
+                elif order_column._type == 'many2one':
+                    key = (parent_obj._name, order_column._obj, order_field)
+                    if key not in seen:
+                        seen.add(key)
+                        inner_clauses = self._generate_m2o_order_by(alias, order_field, query, do_reverse, seen)
+                else:
+                    continue  # ignore non-readable or "non-joinable" fields
+            else:
+                raise ValueError(_("Sorting field %s not found on model %s") % (order_field, self._name))
+            if order_column and order_column._type == 'boolean':
+                inner_clauses = ["COALESCE(%s, false)" % inner_clauses[0]]
+
+            for clause in inner_clauses:
+                if add_dir:
+                    order_by_elements.append("%s %s" % (clause, order_direction))
+                else:
+                    order_by_elements.append(clause)
+        return order_by_elements
 
     def _generate_order_by(self, order_spec, query):
         """
@@ -4577,43 +4647,7 @@ class BaseModel(object):
         order_by_clause = ''
         order_spec = order_spec or self._order
         if order_spec:
-            order_by_elements = []
-            self._check_qorder(order_spec)
-            for order_part in order_spec.split(','):
-                order_split = order_part.strip().split(' ')
-                order_field = order_split[0].strip()
-                order_direction = order_split[1].strip() if len(order_split) == 2 else ''
-                order_column = None
-                inner_clause = None
-                if order_field == 'id':
-                    order_by_elements.append('"%s"."%s" %s' % (self._table, order_field, order_direction))
-                elif order_field in self._columns:
-                    order_column = self._columns[order_field]
-                    if order_column._classic_read:
-                        inner_clause = '"%s"."%s"' % (self._table, order_field)
-                    elif order_column._type == 'many2one':
-                        inner_clause = self._generate_m2o_order_by(order_field, query)
-                    else:
-                        continue  # ignore non-readable or "non-joinable" fields
-                elif order_field in self._inherit_fields:
-                    parent_obj = self.pool[self._inherit_fields[order_field][3]]
-                    order_column = parent_obj._columns[order_field]
-                    if order_column._classic_read:
-                        inner_clause = self._inherits_join_calc(order_field, query)
-                    elif order_column._type == 'many2one':
-                        inner_clause = self._generate_m2o_order_by(order_field, query)
-                    else:
-                        continue  # ignore non-readable or "non-joinable" fields
-                else:
-                    raise ValueError( _("Sorting field %s not found on model %s") %( order_field, self._name))
-                if order_column and order_column._type == 'boolean':
-                    inner_clause = "COALESCE(%s, false)" % inner_clause
-                if inner_clause:
-                    if isinstance(inner_clause, list):
-                        for clause in inner_clause:
-                            order_by_elements.append("%s %s" % (clause, order_direction))
-                    else:
-                        order_by_elements.append("%s %s" % (inner_clause, order_direction))
+            order_by_elements = self._generate_order_by_inner(self._table, order_spec, query)
             if order_by_elements:
                 order_by_clause = ",".join(order_by_elements)
 
@@ -4696,8 +4730,10 @@ class BaseModel(object):
             context = {}
 
         # avoid recursion through already copied records in case of circular relationship
-        seen_map = context.setdefault('__copy_data_seen', {})
-        if id in seen_map.setdefault(self._name, []):
+        if '__copy_data_seen' not in context:
+            context = dict(context, __copy_data_seen=defaultdict(list))
+        seen_map = context['__copy_data_seen']
+        if id in seen_map[self._name]:
             return
         seen_map[self._name].append(id)
 
@@ -4767,8 +4803,10 @@ class BaseModel(object):
             context = {}
 
         # avoid recursion through already copied records in case of circular relationship
-        seen_map = context.setdefault('__copy_translations_seen',{})
-        if old_id in seen_map.setdefault(self._name,[]):
+        if '__copy_translations_seen' not in context:
+            context = dict(context, __copy_translations_seen=defaultdict(list))
+        seen_map = context['__copy_translations_seen']
+        if old_id in seen_map[self._name]:
             return
         seen_map[self._name].append(old_id)
 
@@ -4813,6 +4851,8 @@ class BaseModel(object):
                     del record['id']
                     # remove source to avoid triggering _set_src
                     del record['source']
+                    # duplicated record is not linked to any module
+                    del record['module']
                     record.update({'res_id': target_id})
                     if user_lang and user_lang == record['lang']:
                         # 'source' to force the call to _set_src
@@ -5270,6 +5310,11 @@ class BaseModel(object):
         """ Returns a new version of this recordset attached to the provided
         environment
 
+        .. warning::
+            The new environment will not benefit from the current
+            environment's data cache, so later data access may incur extra
+            delays while re-fetching from the database.
+
         :type env: :class:`~openerp.api.Environment`
         """
         return self._browse(env, self._ids)
@@ -5279,6 +5324,25 @@ class BaseModel(object):
 
         Returns a new version of this recordset attached to the provided
         user.
+
+        By default this returns a `SUPERUSER` recordset, where access control
+        and record rules are bypassed.
+
+        .. note::
+            Using `sudo` could cause data access to cross the boundaries of
+            record rules, possibly mixing records that are meant to be
+            isolated (e.g. records from different companies in multi-company
+            environments).
+
+            It may lead to un-intuitive results in methods which select one
+            record among many - for example getting the default company, or
+            selecting a Bill of Materials.
+
+        .. note::
+            Because the record rules and access control will have to be
+            re-evaluated, the new recordset will not benefit from the current
+            environment's data cache, so later data access may incur extra
+            delays while re-fetching from the database.
         """
         return self.with_env(self.env(user=user))
 
@@ -5337,7 +5401,11 @@ class BaseModel(object):
         """
         if self:
             vals = [func(rec) for rec in self]
-            return reduce(operator.or_, vals) if isinstance(vals[0], BaseModel) else vals
+            if isinstance(vals[0], BaseModel):
+                # return the union of all recordsets in O(n)
+                ids = set(itertools.chain(*[rec._ids for rec in vals]))
+                return vals[0].browse(ids)
+            return vals
         else:
             vals = func(self)
             return vals if isinstance(vals, BaseModel) else []
@@ -5689,6 +5757,7 @@ class BaseModel(object):
                         name: rec[name] for name in names
                     })
                     with rec.env.norecompute():
+                        map(rec._recompute_done, field.computed_fields)
                         rec._write(values)
                 except MissingError:
                     pass
@@ -5750,7 +5819,19 @@ class BaseModel(object):
                 if 'domain' in method_res:
                     result.setdefault('domain', {}).update(method_res['domain'])
                 if 'warning' in method_res:
-                    result['warning'] = method_res['warning']
+                    if result.get('warning'):
+                        if method_res['warning']:
+                            # Concatenate multiple warnings
+                            warning = result['warning']
+                            warning['message'] = '\n\n'.join(filter(None, [
+                                warning.get('title'),
+                                warning.get('message'),
+                                method_res['warning'].get('title'),
+                                method_res['warning'].get('message')
+                            ]))
+                            warning['title'] = _('Warnings')
+                    else:
+                        result['warning'] = method_res['warning']
             return
 
         # onchange V7
@@ -5791,8 +5872,19 @@ class BaseModel(object):
             if 'domain' in method_res:
                 result.setdefault('domain', {}).update(method_res['domain'])
             if 'warning' in method_res:
-                result['warning'] = method_res['warning']
-
+                if result.get('warning'):
+                    if method_res['warning']:
+                        # Concatenate multiple warnings
+                        warning = result['warning']
+                        warning['message'] = '\n\n'.join(filter(None, [
+                            warning.get('title'),
+                            warning.get('message'),
+                            method_res['warning'].get('title'),
+                            method_res['warning'].get('message')
+                        ]))
+                        warning['title'] = _('Warnings')
+                else:
+                    result['warning'] = method_res['warning']
     @api.multi
     def onchange(self, values, field_name, field_onchange):
         """ Perform an onchange on the given field.
@@ -5853,6 +5945,21 @@ class BaseModel(object):
 
         result = {'value': {}}
 
+        # special case for merging commands from *2many fields
+        # TODO: do not forward-port this in 9.0
+        def merge_commands(commands1, commands2):
+            # retrieve updates from commands1
+            updates = {cmd[1]: cmd[2] for cmd in commands1 if cmd[0] == 1}
+            # enrich commands2 with updates from commands1
+            commands = []
+            for cmd in commands2:
+                if cmd[0] == 1 and cmd[1] in updates:
+                    cmd = (1, cmd[1], dict(updates[cmd[1]], **cmd[2]))
+                elif cmd[0] == 4 and cmd[1] in updates:
+                    cmd = (1, cmd[1], updates[cmd[1]])
+                commands.append(cmd)
+            return commands
+
         # process names in order (or the keys of values if no name given)
         while todo:
             name = todo.pop(0)
@@ -5875,9 +5982,10 @@ class BaseModel(object):
                     newval = record[name]
                     if field.type in ('one2many', 'many2many'):
                         if newval != oldval or newval._is_dirty():
-                            # put new value in result
-                            result['value'][name] = field.convert_to_write(
-                                newval, record._origin, subfields.get(name),
+                            # merge new value into result
+                            result['value'][name] = merge_commands(
+                                result['value'].get(name, []),
+                                field.convert_to_write(newval, record._origin, subfields.get(name)),
                             )
                             todo.append(name)
                         else:
