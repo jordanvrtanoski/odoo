@@ -14,6 +14,7 @@ import logging
 import time
 import urlparse
 import uuid
+import traceback
 
 import psycopg2
 import psycopg2.extras
@@ -68,7 +69,7 @@ from inspect import currentframe
 import re
 re_from = re.compile('.* from "?([a-zA-Z_0-9]+)"? .*$')
 re_into = re.compile('.* into "?([a-zA-Z_0-9]+)"? .*$')
-
+re_update = re.compile('update "?([a-zA-Z_0-9]+)"? .*$')
 sql_counter = 0
 
 class Cursor(object):
@@ -157,6 +158,8 @@ class Cursor(object):
     def __init__(self, pool, dbname, dsn, serialized=True):
         self.sql_from_log = {}
         self.sql_into_log = {}
+        self.sql_update_log = {}
+        self.sql_trace_log = {}
 
         # default log level determined at cursor creation, could be
         # overridden later for debugging purposes
@@ -224,7 +227,13 @@ class Cursor(object):
 
         if self.sql_log:
             now = time.time()
-            _logger.debug("query: %s", query)
+            _logger.debug("query [%i]: %s", self.sql_log_count, query)
+            stack = traceback.extract_stack()
+            for (file_name, file_line, module_name, function_name) in stack:
+                trace_log_key = "{0}:{1}".format(file_name,file_line)
+                self.sql_trace_log.setdefault(trace_log_key,0)
+                self.sql_trace_log[trace_log_key] += 1
+                _logger.trace("      [%i] execution stack : %s %s %s", self.sql_log_count, file_name, file_line, function_name)
 
         try:
             params = params or None
@@ -240,6 +249,7 @@ class Cursor(object):
         # advanced stats only if sql_log is enabled
         if self.sql_log:
             delay = (time.time() - now) * 1E6
+            _logger.debug("query [%i] execution time: %s microseconds (1E-6)", self.sql_log_count-1, delay)
 
             res_from = re_from.match(query.lower())
             if res_from:
@@ -251,6 +261,11 @@ class Cursor(object):
                 self.sql_into_log.setdefault(res_into.group(1), [0, 0])
                 self.sql_into_log[res_into.group(1)][0] += 1
                 self.sql_into_log[res_into.group(1)][1] += delay
+            res_update = re_update.match(query.lower())
+            if res_update:
+                self.sql_update_log.setdefault(res_update.group(1), [0, 0])
+                self.sql_update_log[res_update.group(1)][0] += 1
+                self.sql_update_log[res_update.group(1)][1] += delay
         return res
 
     def split_for_in_conditions(self, ids, size=None):
@@ -264,7 +279,7 @@ class Cursor(object):
         if not self.sql_log:
             return
         def process(type):
-            sqllogs = {'from': self.sql_from_log, 'into': self.sql_into_log}
+            sqllogs = {'from': self.sql_from_log, 'into': self.sql_into_log, 'update' : self.sql_update_log}
             sum = 0
             if sqllogs[type]:
                 sqllogitems = sqllogs[type].items()
@@ -279,8 +294,17 @@ class Cursor(object):
             sum = timedelta(microseconds=sum)
             _logger.debug("SUM %s:%s/%d [%d]", type, sum, self.sql_log_count, sql_counter)
             sqllogs[type].clear()
+        def process_trace():
+            _logger.trace("COUNT TRACE")
+            log_items = self.sql_trace_log.items()
+            log_items.sort(lambda x, y: cmp(x[1],y[1]))
+            for r in log_items:
+                _logger.trace("trace: %s %s", r[0], r[1])
+
         process('from')
         process('into')
+        process('update')
+        process_trace()
         self.sql_log_count = 0
         self.sql_log = False
 

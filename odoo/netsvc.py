@@ -117,6 +117,12 @@ def init_logger():
     logging.addLevelName(25, "INFO")
     logging.captureWarnings(True)
 
+    logging.TRACE = 5
+    logging.addLevelName(logging.TRACE, "TRACE")
+    def trace(self, message, *args, **kws):
+        self.log(logging.TRACE, message, *args, **kws)
+    logging.Logger.trace = trace
+
     from tools.translate import resetlocale
     resetlocale()
 
@@ -170,6 +176,7 @@ def init_logger():
 
     if tools.config['log_db']:
         db_levels = {
+            'trace' : logging.TRACE,
             'debug': logging.DEBUG,
             'info': logging.INFO,
             'warning': logging.WARNING,
