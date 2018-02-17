@@ -67,9 +67,9 @@ import threading
 from inspect import currentframe
 
 import re
-re_from = re.compile('.* from "?([a-zA-Z_0-9]+)"? .*$')
-re_into = re.compile('.* into "?([a-zA-Z_0-9]+)"? .*$')
-re_update = re.compile('update "?([a-zA-Z_0-9]+)"? .*$')
+re_from = re.compile('select .* from "?([a-zA-Z_0-9]+)"? .*')
+re_into = re.compile('update .* into "?([a-zA-Z_0-9]+)"? .*')
+re_update = re.compile('update "?([a-zA-Z_0-9]+)"? .*')
 sql_counter = 0
 
 class Cursor(object):
