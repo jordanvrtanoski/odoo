@@ -46,6 +46,7 @@ __all__ = [
 ]
 
 import logging
+import traceback
 from collections import defaultdict, Mapping
 from contextlib import contextmanager
 from inspect import currentframe, getargspec
@@ -859,6 +860,13 @@ class Environment(Mapping):
 
     def invalidate_all(self):
         """ Clear the cache of all environments. """
+        _logger.debug("!!!!!!!!!!!! All environments cache is invalidated !!!!!!!!!!!!!!!")
+        stack = traceback.extract_stack()
+        for (file_name, file_line, module_name, function_name) in stack:
+            trace_log_key = "{0}:{1}".format(file_name, file_line)
+            _logger.trace("!!!!! execution stack : %s %s %s", file_name, file_line,
+                          function_name)
+
         for env in list(self.all):
             env.cache.clear()
             env._protected.clear()
