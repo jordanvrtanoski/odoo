@@ -2494,6 +2494,28 @@ class BaseModel(object):
                                 msg = "Table '%s': dropping index for column '%s' of type '%s' as it is not required anymore"
                                 _schema.debug(msg, self._table, name, field.type)
 
+                            if config.get('db_index_trig'):
+                                # If trigram indexes are enabled, verify trigram index on fields with index_trigram or translate set to true
+                                indexname = '%s_%s_index_tg' % (self._table, name)
+                                cr.execute("SELECT indexname FROM pg_indexes WHERE indexname = %s and tablename = %s", (indexname, self._table))
+                                res2 = cr.dictfetchall()
+                                if not res2 and (field.index_trigram or (field.translate and config.get('db_index_trig_translate'))):
+                                    cr.execute("""SELECT extversion FROM pg_extension WHERE extname = 'pg_trgm';""")
+                                    ext_ver = cr.dictfetchall()
+                                    if ext_ver:
+                                        cr.execute('CREATE INDEX "%s_%s_index_tg" ON "%s" USING gin ("%s" gin_trgm_ops)' % (self._table, name, self._table, name))
+                                        cr.commit()
+                                    else:
+                                        msg = "WARNING: unable to create trigram index on column %s of table %s !\n"\
+                                            "Try to create the pg_trig extension\n"\
+                                            "CREATE EXTENSION pg_trig"
+                                        _logger.warning(msg, name, self._table, exc_info=True)
+                                if res2 and not field.index_trigram:
+                                    cr.execute('DROP INDEX "%s_%s_index_tg"' % (self._table, name))
+                                    cr.commit()
+                                    msg = "Table '%s': dropping trigram index for column '%s' of type '%s' as it is not required anymore"
+                                    _schema.debug(msg, self._table, name, field.type)
+
                             if field.type == 'many2one':
                                 comodel = self.env[field.comodel_name]
                                 if comodel._auto and comodel._table != 'ir_actions':
@@ -2524,6 +2546,19 @@ class BaseModel(object):
                                 self._m2o_add_foreign_key_checked(name, comodel, field.ondelete)
                         if field.index:
                             cr.execute('CREATE INDEX "%s_%s_index" ON "%s" ("%s")' % (self._table, name, self._table, name))
+
+                        if config.get('db_index_trig') and (field.index_trigram or (field.translate and config.get('db_index_trig_translate'))):
+                            cr.execute("""SELECT extversion FROM pg_extension WHERE extname = 'pg_trgm';""")
+                            ext_ver = cr.dictfetchall()
+                            if ext_ver:
+                                cr.execute('CREATE INDEX "%s_%s_index_tg" ON "%s" USING gin ("%s" gin_trgm_ops)' % (
+                                self._table, name, self._table, name))
+                            else:
+                                msg = "WARNING: unable to create trigram index on column %s of table %s !\n"\
+                                    "Try to create the pg_trig extension\n"\
+                                    "CREATE EXTENSION pg_trig"
+                                _logger.warning(msg, name, self._table, exc_info=True)
+
                         if field.required:
                             try:
                                 cr.commit()

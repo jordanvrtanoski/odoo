@@ -1109,25 +1109,59 @@ class expression(object):
                         # params will be flatten by to_sql() => expand the placeholders
                         instr = '(%s)' % ', '.join(['%s'] * len(right))
 
-                    subselect = """WITH temp_irt_current (id, name) as (
-                            SELECT ct.id, coalesce(it.value,ct.{quote_left})
-                            FROM {current_table} ct
-                            LEFT JOIN ir_translation it ON (it.name = %s and
-                                        it.lang = %s and
-                                        it.type = %s and
-                                        it.res_id = ct.id and
-                                        it.value != '')
+                    params = []
+                    if (need_wildcard and
+                            len(right) > 4 and
+                            tools.config['db_index_trig'] and
+                            (
+                                    field.index_trigram or
+                                    (field.translate and tools.config['db_index_trig_translate'])
                             )
-                            SELECT id FROM temp_irt_current WHERE {name} {operator} {right} order by name
-                            """.format(current_table=model._table, quote_left=_quote(left), name=unaccent('name'),
+                    ):
+                        # This is a query optimized for pg_trgm type of trigram index. Trigram index is considered usable
+                        # by postgresqk query optimized only if the patter is larger than 3 characters, othwerise a full table scan
+                        # is executed if no other index is applicable.
+                        # Index should be created as CREATE INDEX {index_name} ON {table_name} USING gin ({colum_name} gin_trgm_ops)
+                        # and database should have the pg_tgrm extension enabled
+                        # CREATE EXTENSION pg_trgm;
+                        subselect = """
+                                WITH temp_irt_current (id) as (
+                                  SELECT res_id FROM ir_translation it WHERE it.name = %s AND it.lang = %s AND it.type = %s AND value {operator} {right}
+                                )
+                                SELECT id FROM {current_table} WHERE {name} {operator} {right}
+                                EXCEPT ALL
+                                SELECT id FROM temp_irt_current
+                                UNION ALL
+                                SELECT id FROM temp_irt_current
+                                """.format(current_table=model._table, quote_left=_quote(left), name=unaccent('name'),
                                        operator=sql_operator, right=instr)
+                        params = (
+                            model._name + ',' + left,
+                            model.env.lang or 'en_US',
+                            'model',
+                            right,
+                            right,
+                        )
+                    else:
+                        subselect = """WITH temp_irt_current (id, name) as (
+                                SELECT ct.id, coalesce(it.value,ct.{quote_left})
+                                FROM {current_table} ct
+                                LEFT JOIN ir_translation it ON (it.name = %s and
+                                            it.lang = %s and
+                                            it.type = %s and
+                                            it.res_id = ct.id and
+                                            it.value != '')
+                                )
+                                SELECT id FROM temp_irt_current WHERE {name} {operator} {right} order by name
+                                """.format(current_table=model._table, quote_left=_quote(left), name=unaccent('name'),
+                                       operator=sql_operator, right=instr)
+                        params = (
+                                model._name + ',' + left,
+                                model.env.lang or 'en_US',
+                                'model',
+                                right,
+                        )
 
-                    params = (
-                        model._name + ',' + left,
-                        model.env.lang or 'en_US',
-                        'model',
-                        right,
-                    )
                     push(create_substitution_leaf(leaf, ('id', inselect_operator, (subselect, params)), model, internal=True))
 
                 else:

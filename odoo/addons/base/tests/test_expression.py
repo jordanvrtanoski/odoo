@@ -553,6 +553,26 @@ class TestExpression(TransactionCase):
             countries = Country.search(domain)
             self.assertEqual(countries, belgium)
 
+    def test_trigram_index_translation(self):
+        self.env['ir.translation'].load_module_terms(['base'], ['fr_FR'])
+
+        Country = self.env['res.country']
+        domains = [
+            [('name', 'ilike', 'B')],
+            [('name', 'ilike', 'Be')],
+            [('name', 'ilike', 'Bel')],
+            [('name', 'ilike', 'Belg')],
+            [('name', 'ilike', 'Belgi')],
+            [('name', 'ilike', 'Belgiq')],
+            [('name', 'ilike', 'Belgiqu')],
+            [('name', 'ilike', 'Belgique')],
+        ]
+
+        for domain in domains:
+            countries = Country.with_context(lang='fr_FR').search(domain)
+            for country in countries.read(['name']):
+                self.assertRegexpMatches(country['name'].lower(), ".*{0}.*".format(domain[0][2].lower()))
+
     def test_long_table_alias(self):
         # To test the 64 characters limit for table aliases in PostgreSQL
         self.patch_order('res.users', 'partner_id')

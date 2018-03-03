@@ -78,6 +78,7 @@ def _create_empty_database(name):
     db = odoo.sql_db.db_connect('postgres')
     with closing(db.cursor()) as cr:
         chosen_template = odoo.tools.config['db_template']
+        trigram_ext = odoo.tools.config['db_index_trig']
         cr.execute("SELECT datname FROM pg_database WHERE datname = %s",
                    (name,))
         if cr.fetchall():
@@ -85,6 +86,20 @@ def _create_empty_database(name):
         else:
             cr.autocommit(True)     # avoid transaction block
             cr.execute("""CREATE DATABASE "%s" ENCODING 'unicode' TEMPLATE "%s" """ % (name, chosen_template))
+            if trigram_ext:
+                db_new = odoo.sql_db.db_connect(name)
+                with closing(db_new.cursor()) as cr_new:
+                    from psycopg2 import ProgrammingError, errorcodes
+                    try:
+                        cr_new.autocommit(True)
+                        cr_new.execute("""CREATE EXTENSION pg_trgm""")
+                        _logger.info('Extension pg_tgrm enabled')
+                    except ProgrammingError as err:
+                        if err.pgcode == errorcodes.INSUFFICIENT_PRIVILEGE:
+                            _logger.warning("Could not create pg_tgrm extension on database %s due to insuficient privilege, "
+                                 "skipping auto-creation: %s", name, err)
+                        else:
+                            raise err
 
 def exp_create_database(db_name, demo, lang, user_password='admin', login='admin', country_code=None):
     """ Similar to exp_create but blocking."""

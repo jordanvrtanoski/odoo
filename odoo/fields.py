@@ -323,6 +323,7 @@ class Field(object):
 
         'store': True,                  # whether the field is stored in database
         'index': False,                 # whether the field is indexed in database
+        'index_trigram': False,         # whether the field is indexed with a Trigram index in database
         'manual': False,                # whether the field is a custom field
         'copy': True,                   # whether the field is copied over by BaseModel.copy()
         'depends': (),                  # collection of field dependencies

@@ -205,6 +205,11 @@ class configmanager(object):
                          help="specify the the maximum number of physical connections to posgresql")
         group.add_option("--db-template", dest="db_template", my_default="template1",
                          help="specify a custom database template to create a new database")
+        group.add_option("--db-index-trig", action="store_true", dest="db_index_trig", my_default=False,
+                         help="allow use of trigram inexes wiht pg_trgm extension for tables with translated fields or for search patterns with LIKE and ILIKE operators on fields marked with index_trigram=True")
+        group.add_option("--db-index-trig-translate", action="store_true", dest="db_index_trig_translate", my_default=False,
+                         help="create trigram index for all fields that hade translate=True. For the feature to work --db-index-trig needs to be enabled as well.")
+
         parser.add_option_group(group)
 
         group = optparse.OptionGroup(parser, "Internationalisation options",
@@ -379,7 +384,7 @@ class configmanager(object):
         # if defined dont take the configfile value even if the defined value is None
         keys = ['xmlrpc_interface', 'xmlrpc_port', 'longpolling_port',
                 'db_name', 'db_user', 'db_password', 'db_host',
-                'db_port', 'db_template', 'logfile', 'pidfile', 'smtp_port',
+                'db_port', 'db_template', 'db_index_trig', 'db_index_trig_translate', 'logfile', 'pidfile', 'smtp_port',
                 'email_from', 'smtp_server', 'smtp_user', 'smtp_password',
                 'db_maxconn', 'import_partial', 'addons_path',
                 'xmlrpc', 'syslog', 'without_demo',
