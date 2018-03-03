@@ -368,6 +368,7 @@ class HrPayslip(models.Model):
     def refund_sheet(self):
         for payslip in self:
             copied_payslip = payslip.copy({'credit_note': True, 'name': _('Refund: ') + payslip.name})
+            copied_payslip.compute_sheet()
             copied_payslip.action_payslip_done()
         formview_ref = self.env.ref('hr_payroll.view_hr_payslip_form', False)
         treeview_ref = self.env.ref('hr_payroll.view_hr_payslip_tree', False)
@@ -654,7 +655,7 @@ class HrPayslip(models.Model):
             return res
         ttyme = datetime.fromtimestamp(time.mktime(time.strptime(date_from, "%Y-%m-%d")))
         employee = self.env['hr.employee'].browse(employee_id)
-        locale = self.env.context.get('lang', 'en_US')
+        locale = self.env.context.get('lang') or 'en_US'
         res['value'].update({
             'name': _('Salary Slip of %s for %s') % (employee.name, tools.ustr(babel.dates.format_date(date=ttyme, format='MMMM-y', locale=locale))),
             'company_id': employee.company_id.id,
@@ -703,7 +704,7 @@ class HrPayslip(models.Model):
         date_to = self.date_to
 
         ttyme = datetime.fromtimestamp(time.mktime(time.strptime(date_from, "%Y-%m-%d")))
-        locale = self.env.context.get('lang', 'en_US')
+        locale = self.env.context.get('lang') or 'en_US'
         self.name = _('Salary Slip of %s for %s') % (employee.name, tools.ustr(babel.dates.format_date(date=ttyme, format='MMMM-y', locale=locale)))
         self.company_id = employee.company_id
 

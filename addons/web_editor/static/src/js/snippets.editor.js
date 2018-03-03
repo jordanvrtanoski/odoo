@@ -1010,7 +1010,9 @@ data.Editor = Class.extend({
         this.$target.after($clone);
         this.buildingBlock.call_for_all_snippets($clone, function (editor, $snippet) {
             for (var i in editor.styles) {
-                editor.styles[i].on_clone($snippet);
+                editor.styles[i].on_clone($snippet, {
+                    isCurrent: ($snippet.is($clone)),
+                });
             }
         });
         return false;
@@ -1118,7 +1120,7 @@ data.Editor = Class.extend({
         }).bind(this));
 
         // Activate the overlay
-        $style_button.toggleClass("hidden", $ul.children(":not(.divider):not(.hidden)").length === 0);
+        $style_button.toggleClass("hidden", $ul.children(":not(.o_main_header):not(.divider):not(.hidden)").length === 0);
         this.$overlay.toggleClass("oe_active", !!focus);
 
         function _do_action_focus(style, $dest) {
